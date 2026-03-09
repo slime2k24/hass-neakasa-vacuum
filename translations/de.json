@@ -1,0 +1,114 @@
+{
+    "title": "Neakasa",
+    "config": {
+        "step": {
+            "user": {
+                "title": "Neakasa Einrichtung",
+                "description": "Diese Anmeldeinformationen werden verwendet, um die Daten vom Server abzurufen.",
+                "data": {
+                    "username": "Benutzername",
+                    "password": "Kennwort"
+                }
+            },
+            "device": {
+                "description": "Wähle eins der Geräte aus.",
+                "data": {
+                    "device_id": "Geräte ID"
+                }
+            }
+        },
+        "abort": {
+            "connenction": "Fehler bei dem Verbindungsaufbau.",
+            "authentication": "Fehler bei der Authentifizierung.",
+            "unknown": "Unbekannter Fehler."
+        }
+    },
+    "entity": {
+        "button": {
+            "start_cleaning": {
+                "name": "Reinigung starten"
+            },
+            "resume_cleaning": {
+                "name": "Weiter"
+            },
+            "return_to_base": {
+                "name": "Zur Basis"
+            },
+            "pause_cleaning": {
+                "name": "Pause"
+            }
+        },
+        "binary_sensor": {
+            "is_cleaning": {
+                "name": "Reinigt gerade"
+            },
+            "is_charging": {
+                "name": "Lädt gerade"
+            },
+            "is_paused": {
+                "name": "Pausiert"
+            },
+            "led_switch": {
+                "name": "LED"
+            }
+        },
+        "sensor": {
+            "work_mode": {
+                "name": "Arbeitsmodus",
+                "state": {
+                    "idle": "Leerlauf",
+                    "cleaning": "Reinigung",
+                    "returning": "Kehrt zur Basis",
+                    "charging": "Lädt",
+                    "paused": "Pausiert",
+                    "error": "Fehler",
+                    "standby": "Bereitschaft",
+                    "manual": "Manuell"
+                }
+            },
+            "wifi_rssi": {
+                "name": "WiFi RSSI"
+            },
+            "wifi_ip": {
+                "name": "IP-Adresse"
+            },
+            "mcu_version": {
+                "name": "Firmware Version"
+            },
+            "volume": {
+                "name": "Lautstärke"
+            },
+            "battery": {
+                "name": "Akku"
+            },
+            "clean_time": {
+                "name": "Reinigungszeit"
+            },
+            "clean_area": {
+                "name": "Gereinigte Fläche"
+            },
+            "error_code": {
+                "name": "Fehlercode"
+            }
+        },
+        "select": {
+            "wind_power": {
+                "name": "Saugstärke",
+                "state": {
+                    "quiet": "Leise",
+                    "standard": "Standard",
+                    "strong": "Stark",
+                    "max": "MAX"
+                }
+            }
+        },
+        "switch": {
+            "led_switch": {
+                "name": "LED"
+            },
+            "pause_switch": {
+                "name": "Pause"
+            }
+        }
+    }
+}
