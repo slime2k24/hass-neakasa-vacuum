@@ -59,4 +59,15 @@ class NeakasaWindPowerSelect(CoordinatorEntity, SelectEntity):
             _LOGGER.error("Invalid wind power option: %s", option)
             return
         value = WIND_POWER_OPTIONS.index(option)
-        await self.coordinator.setProperty("WindPower", value)
+        # Send to API
+        from . import get_shared_api
+        api = await get_shared_api(
+            self.coordinator.hass,
+            self.coordinator.username,
+            self.coordinator.password,
+        )
+        await api.setDeviceProperties(self.coordinator.deviceid, {"WindPower": value})
+        # Update local state immediately so the dropdown reflects the change
+        self.coordinator.data.wind_power = value
+        self.coordinator.async_set_updated_data(self.coordinator.data)
+        self.async_write_ha_state()

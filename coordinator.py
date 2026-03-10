@@ -3,6 +3,7 @@ from datetime import timedelta
 import logging
 import json
 import base64
+import struct
 from typing import Optional, Any
 
 from homeassistant.config_entries import ConfigEntry
@@ -36,36 +37,36 @@ class NeakasaRobotData:
     """Class to hold robot vacuum api data."""
 
     # Status
-    work_mode: int = 0                  # WorkMode: 0=idle,1=cleaning,2=returning,3=charging,...
-    work_mode_name: str = "unknown"     # Human readable work mode
+    work_mode: int = 0
+    work_mode_name: str = "unknown"
     is_cleaning: bool = False
     is_charging: bool = False
     is_paused: bool = False
 
     # Settings
-    pause_switch: int = 0               # PauseSwitch
-    led_switch: int = 1                 # LedSwitch
-    volume: int = 50                    # Vol
-    wind_power: int = 1                 # WindPower: 0=quiet,1=standard,2=strong,3=max
+    pause_switch: int = 0
+    led_switch: int = 1
+    volume: int = 50
+    wind_power: int = 1             # WindPower: 0=quiet,1=standard,2=strong,3=max
 
     # Network
-    wifi_rssi: int = 0                  # WiFI_RSSI
-    wifi_ip: str = ""                   # WifiIp
-    wifi_band: str = ""                 # WIFI_Band
-    mac_address: str = ""               # MACAddress
+    wifi_rssi: int = 0
+    wifi_ip: str = ""
+    wifi_band: str = ""
+    mac_address: str = ""
 
     # Device info
-    nickname: str = ""                  # Nickname
-    mcu_version: str = ""               # McuVersion
+    nickname: str = ""
+    mcu_version: str = ""
 
-    # Map data (raw base64 encoded map from DevMapSend)
-    map_data: Optional[dict] = None     # Parsed DevMapSend JSON
+    # Map data (parsed DevMapSend + decoded path)
+    map_data: Optional[dict] = None
 
-    # Extra properties (battery etc. – only available while cleaning)
-    battery: Optional[int] = None       # Battery (if available)
-    clean_time: Optional[int] = None    # Clean time in seconds (if available)
-    clean_area: Optional[float] = None  # Clean area in m² (if available)
-    error_code: Optional[int] = None    # Error code (if available)
+    # Optional properties (only available while cleaning)
+    battery: Optional[int] = None
+    clean_time: Optional[int] = None
+    clean_area: Optional[float] = None
+    error_code: Optional[int] = None
 
 
 class NeakasaCoordinator(DataUpdateCoordinator):
@@ -75,7 +76,6 @@ class NeakasaCoordinator(DataUpdateCoordinator):
 
     def __init__(self, hass: HomeAssistant, config_entry: ConfigEntry) -> None:
         """Initialize coordinator."""
-
         self.deviceid = config_entry.data[CONF_DEVICE_ID]
         self.devicename = config_entry.data[CONF_FRIENDLY_NAME]
         self.username = config_entry.data[CONF_USERNAME]
@@ -97,11 +97,21 @@ class NeakasaCoordinator(DataUpdateCoordinator):
 
         self.api = None
 
+    # Mapping from API key (PascalCase) to dataclass field name (snake_case)
+    _API_KEY_TO_FIELD = {
+        "WindPower":   "wind_power",
+        "LedSwitch":   "led_switch",
+        "PauseSwitch": "pause_switch",
+        "Vol":         "volume",
+    }
+
     async def setProperty(self, key: str, value: Any):
         from . import get_shared_api
         api = await get_shared_api(self.hass, self.username, self.password)
         await api.setDeviceProperties(self.deviceid, {key: value})
-        setattr(self.data, key, value)
+        # Map to correct dataclass field name and update immediately
+        field = self._API_KEY_TO_FIELD.get(key, key)
+        setattr(self.data, field, value)
         self.async_set_updated_data(self.data)
 
     async def invokeService(self, service: str):
@@ -109,7 +119,6 @@ class NeakasaCoordinator(DataUpdateCoordinator):
         api = await get_shared_api(self.hass, self.username, self.password)
         match service:
             case 'start':
-                # Pass the current map_id if we have one
                 map_id = 0
                 if self.data and self.data.map_data:
                     map_id = self.data.map_data.get('map_id') or 0
@@ -129,25 +138,69 @@ class NeakasaCoordinator(DataUpdateCoordinator):
             return await api.getDeviceProperties(self.deviceid)
         return await self._devicePropertiesCache.get_or_update(fetch)
 
-    def _parse_map_data(self, dev_map_send: list) -> Optional[dict]:
-        """Parse the DevMapSend property to extract map metadata."""
+    def _decode_path(self, path_raw: bytes) -> list:
+        """Decode a binary HisPath/CurPath blob into absolute (x_mm, y_mm) points.
+
+        Binary layout (little-endian):
+          bytes  0– 3  header_size (always 28)
+          bytes  4– 7  version
+          bytes  8–11  path_id
+          bytes 12–15  uncompressed_size (num_points * 4 bytes)
+          bytes 16–27  reserved
+          bytes 28–    LZ4-compressed int16 delta pairs (dx_mm, dy_mm)
+        """
+        if len(path_raw) < 28:
+            return []
+        try:
+            header_size       = struct.unpack_from("<I", path_raw, 0)[0]
+            uncompressed_size = struct.unpack_from("<I", path_raw, 12)[0]
+            compressed_block  = path_raw[header_size:]
+
+            from .camera import _lz4_decompress
+            raw = _lz4_decompress(compressed_block, uncompressed_size)
+
+            points = []
+            cx = cy = 0
+            for i in range(0, len(raw) - 3, 4):
+                dx = struct.unpack_from("<h", raw, i)[0]
+                dy = struct.unpack_from("<h", raw, i + 2)[0]
+                cx += dx; cy += dy
+                points.append((cx, cy))
+            return points
+        except Exception as e:
+            _LOGGER.debug("Could not decode path: %s", e)
+            return []
+
+    def _parse_map_data(self, dev_map_send: list, his_path: list) -> Optional[dict]:
+        """Parse DevMapSend and HisPath into a unified map_data dict."""
         try:
             if not dev_map_send or len(dev_map_send) == 0:
                 return None
             raw = dev_map_send[0]
             parsed = json.loads(raw)
             data = parsed.get('data', {})
+
+            # Decode cleaning path from HisPath
+            path_points = []
+            if his_path and len(his_path) > 0:
+                try:
+                    path_raw = base64.b64decode(his_path[0])
+                    path_points = self._decode_path(path_raw)
+                except Exception as e:
+                    _LOGGER.debug("Could not decode HisPath: %s", e)
+
             return {
-                'map_id': data.get('mapId'),
-                'width': data.get('width'),
-                'height': data.get('height'),
-                'resolution': data.get('resolution'),
-                'x_min': data.get('x_min'),
-                'y_min': data.get('y_min'),
-                'charge_pos': data.get('chargeHandlePos'),
+                'map_id':       data.get('mapId'),
+                'width':        data.get('width'),
+                'height':       data.get('height'),
+                'resolution':   data.get('resolution'),
+                'x_min':        data.get('x_min'),
+                'y_min':        data.get('y_min'),
+                'charge_pos':   data.get('chargeHandlePos'),
                 'charge_state': data.get('chargeHandleState'),
-                'map_base64': data.get('map'),   # raw lz4+base64 map
-                'area': data.get('area', []),
+                'map_base64':   data.get('map'),
+                'area':         data.get('area', []),
+                'path_points':  path_points,
             }
         except Exception as e:
             _LOGGER.debug("Could not parse DevMapSend: %s", e)
@@ -163,7 +216,6 @@ class NeakasaCoordinator(DataUpdateCoordinator):
             _LOGGER.debug("Raw device properties: %s", raw)
 
             def val(key, default=None):
-                """Safely get value from property dict."""
                 entry = raw.get(key)
                 if entry is None:
                     return default
@@ -172,8 +224,14 @@ class NeakasaCoordinator(DataUpdateCoordinator):
             work_mode = val('WorkMode', 0)
             work_mode_name = WORK_MODE_MAP.get(work_mode, f"unknown ({work_mode})")
 
-            # Parse map
-            map_data = self._parse_map_data(val('DevMapSend', []))
+            # BatteryState is a float (e.g. 100.0) – convert to int
+            battery_raw = val('BatteryState')
+            battery = int(battery_raw) if battery_raw is not None else None
+
+            map_data = self._parse_map_data(
+                val('DevMapSend', []),
+                val('HisPath', []),
+            )
 
             return NeakasaRobotData(
                 work_mode=work_mode,
@@ -185,6 +243,7 @@ class NeakasaCoordinator(DataUpdateCoordinator):
                 pause_switch=val('PauseSwitch', 0),
                 led_switch=val('LedSwitch', 1),
                 volume=val('Vol', 50),
+                wind_power=val('WindPower', 1),
 
                 wifi_rssi=val('WiFI_RSSI', 0),
                 wifi_ip=val('WifiIp', ''),
@@ -196,10 +255,7 @@ class NeakasaCoordinator(DataUpdateCoordinator):
 
                 map_data=map_data,
 
-                # Optional properties (only present while cleaning)
-                wind_power=val('WindPower', 1),
-
-                battery=val('Battery'),
+                battery=battery,
                 clean_time=val('CleanTime'),
                 clean_area=val('CleanArea'),
                 error_code=val('ErrorCode'),
@@ -209,9 +265,8 @@ class NeakasaCoordinator(DataUpdateCoordinator):
             _LOGGER.warning("Auth error for %s, reconnecting: %s", self.devicename, err)
             try:
                 from . import force_reconnect_api
-                api = await force_reconnect_api(self.hass, self.username, self.password)
+                await force_reconnect_api(self.hass, self.username, self.password)
                 _LOGGER.info("Reconnected API for %s", self.devicename)
-                # Retry once after reconnect
                 return await self.async_update_data()
             except Exception as reconnect_err:
                 _LOGGER.error("Reconnect failed for %s: %s", self.devicename, reconnect_err)

@@ -17,7 +17,8 @@ from .const import DOMAIN, _LOGGER
 from .coordinator import NeakasaCoordinator
 from .api import NeakasaAPI
 
-PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.SWITCH, Platform.BUTTON, Platform.SELECT]
+#PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.SWITCH, Platform.BUTTON, Platform.SELECT]
+PLATFORMS: list[Platform] = [Platform.SENSOR, Platform.BINARY_SENSOR, Platform.SWITCH, Platform.BUTTON, Platform.SELECT, Platform.CAMERA]
 
 @dataclass
 class RuntimeData:
